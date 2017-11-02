@@ -1,3 +1,4 @@
+#!/usr/bin/env sh
 # -*- coding: utf-8 -*-
 # ----------------------------------------------------------------------------#
 #  Copyright © 2015-2016 VMware, Inc. All Rights Reserved.                    #
@@ -29,3 +30,46 @@
 #  ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF     #
 #  THE POSSIBILITY OF SUCH DAMAGE.                                            #
 # ----------------------------------------------------------------------------#
+
+liota_config="/etc/liota/liota.conf"
+package_messenger_pipe=""
+
+if ! [ `ps -ef | grep "liotad.py" | grep -v grep | wc -l` -gt 0 ]
+then
+        echo "Liota package manager is not running. Please run it first!"
+        exit -1
+fi
+
+if [ ! -f "$liota_config" ]
+then
+    echo "ERROR: Configuration file not found" >&2
+    echo "You made need to copy the distributed configuration file from /usr/lib/liota/config/liota.conf to /etc/liota/liota.conf" >&2
+    exit -2
+fi
+
+while read line # Read configurations from file
+do
+    varname=$(echo "$line" | sed "s/^\(..*\)\s*\=\s*..*$/\1/")
+    if [ "$varname" = "pkg_msg_pipe " ]
+    then
+        value=$(echo "$line" | sed "s/^..*\s*\=\s*\(..*\)$/\1/")
+        package_messenger_pipe=$value
+        break
+    fi
+done < $liota_config
+
+if [ "$package_messenger_pipe" = "" ]
+then
+    echo "ERROR: Pipe path not found in configuration file" >&2
+    exit -3
+fi
+
+if [ ! -p "$package_messenger_pipe" ]
+then
+    echo "ERROR: Pipe path is not a named pipe" >&2
+    exit -4
+fi
+
+# Echo to named pipe
+echo "Pipe file: $package_messenger_pipe" >&2
+echo "$@" > $package_messenger_pipe

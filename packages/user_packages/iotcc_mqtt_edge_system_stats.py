@@ -32,10 +32,9 @@
 
 from linux_metrics import cpu_stat, disk_stat, net_stat
 
-
 from liota.core.package_manager import LiotaPackage
-from liota.lib.utilities.utility import get_default_network_interface, get_disk_name, read_user_config
-
+from liota.lib.utilities.utility import get_default_network_interface, get_disk_name
+from linux_metrics import mem_stat
 
 dependencies = ["iotcc_mqtt"]
 
@@ -48,6 +47,7 @@ network_interface = get_default_network_interface()
 # If edge_system has multiple disks, only first disk will be returned.
 # Such cases should be handled manually.
 disk_name = get_disk_name()
+
 
 # ---------------------------------------------------------------------------
 # This is a sample application package to publish edge system stats data to
@@ -65,11 +65,26 @@ def read_cpu_utilization(sample_duration_sec=1):
 
 
 def read_disk_usage_stats():
-    return round(disk_stat.disk_reads_writes(disk_name)[0], 2)
+    # If the device raises an intermittent exception during metric collection process it will be required
+    # to be handled in the user code otherwise if an exception is thrown from user code
+    # the collection process will be stopped for that metric.
+    # If the None value is returned by UDM then metric value for that particular collector instance won't be published.
+    try:
+        disk_stat_value = round(disk_stat.disk_reads_writes(disk_name)[0], 2)
+    except Exception:
+        return None
+    return disk_stat_value
 
 
 def read_network_bytes_received():
     return round(net_stat.rx_tx_bytes(network_interface)[0], 2)
+
+
+def read_mem_free():
+    total_mem = round(mem_stat.mem_stats()[1], 4)
+    free_mem = round(mem_stat.mem_stats()[3], 4)
+    mem_free_percent = ((total_mem - free_mem) / total_mem) * 100
+    return round(mem_free_percent, 2)
 
 
 class PackageClass(LiotaPackage):
@@ -80,10 +95,6 @@ class PackageClass(LiotaPackage):
         # Acquire resources from registry
         iotcc_edge_system = copy.copy(registry.get("iotcc_mqtt_edge_system"))
         iotcc = registry.get("iotcc_mqtt")
-
-        # Get values from configuration file
-        config_path = registry.get("package_conf")
-        config = read_user_config(config_path + '/sampleProp.conf')
 
         # Create metrics
         self.metrics = []
@@ -131,6 +142,18 @@ class PackageClass(LiotaPackage):
         reg_metric_network_bytes_received.start_collecting()
         self.metrics.append(reg_metric_network_bytes_received)
 
+        metric_name = "Memory Free"
+        mem_free_metric = Metric(name=metric_name,
+                                 unit=None, interval=10,
+                                 aggregation_size=1,
+                                 sampling_function=read_mem_free
+                                 )
+        reg_mem_free_metric = iotcc.register(mem_free_metric)
+        iotcc.create_relationship(iotcc_edge_system, reg_mem_free_metric)
+        reg_mem_free_metric.start_collecting()
+        self.metrics.append(reg_mem_free_metric)
+
     def clean_up(self):
+        # Kindly include this call to stop the metrics collection on package unload
         for metric in self.metrics:
             metric.stop_collecting()
