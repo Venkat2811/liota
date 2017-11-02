@@ -44,12 +44,15 @@ from threading import Lock
 from liota.dccs.dcc import DataCenterComponent, RegistrationFailure
 from liota.entities.metrics.metric import Metric
 from liota.lib.utilities.utility import LiotaConfigPath, getUTCmillis, mkdir, read_liota_config
+from liota.lib.transports.mqtt import MqttMessagingAttributes
 from liota.lib.utilities.si_unit import parse_unit
 from liota.entities.metrics.registered_metric import RegisteredMetric
 from liota.entities.registered_entity import RegisteredEntity
 
 log = logging.getLogger(__name__)
 timeout = 300
+
+
 class IotControlCenter(DataCenterComponent):
     """ The implementation of IoTCC cloud provider solution
 
@@ -65,7 +68,11 @@ class IotControlCenter(DataCenterComponent):
         elif not self.comms.identity.password:
             log.error("Password not found")
             raise ValueError("Password not found")
-        thread = threading.Thread(target=self.comms.receive)
+
+        self._trans_id_q_map = {}
+        self._trans_id_map_lock = Lock()
+        thread = threading.Thread(target=self.comms.receive,
+                                  args=(MqttMessagingAttributes(sub_callback=self._receive_message_callback),))
         thread.daemon = True
         # This thread will continuously run in background to receive response or actions from DCC
         thread.start()
@@ -79,6 +86,36 @@ class IotControlCenter(DataCenterComponent):
         # Liota internal entity file system path special for iotcc
         self.entity_file_path = self._get_file_storage_path("entity_file_path")
         self.file_ops_lock = Lock()
+
+    def _receive_message_callback(self, client, userdata, msg):
+        """
+        Callback method to receive messages from DCC
+
+        It inserts message in to the queue belonging to the corresponding message's transaction id
+
+        TODO: Add capability to handle action messages received from DCC
+        """
+        json_msg = json.loads(msg.payload)
+        with self._trans_id_map_lock:
+            queue = self._trans_id_q_map.pop(json_msg["transactionID"], None)
+        if queue:
+            log.debug("Queue found for transactionID : " + str(json_msg["transactionID"]))
+            queue.put(json.dumps(json_msg))
+        else:
+            log.warn("Queue NOT found for transactionID : " + str(json_msg["transactionID"]))
+
+    def _update_transaction_map(self, trans_id):
+        """
+        Update (transaction_id, queue) map by add new queue for the given trans_id
+
+        :param trans_id: Message's trans_id
+
+        :return: New queue created for this trans_id
+        """
+        queue = Queue.Queue()
+        with self._trans_id_map_lock:
+            self._trans_id_q_map.update({trans_id: queue})
+        return queue
 
     def register(self, entity_obj):
         """ Register the objects
@@ -106,16 +143,16 @@ class IotControlCenter(DataCenterComponent):
                         self.reg_entity_id = json_msg["body"]["uuid"]
                     else:
                         log.info("Waiting for resource creation")
-                        on_response(self.recv_msg_queue.get(True, timeout))
+                        on_response(self._update_transaction_map(json_msg["transactionID"]).get(True, timeout))
                 except Exception as err:
                     log.exception("Exception while registering resource")
                     raise err
 
             if entity_obj.entity_type == "EdgeSystem":
                 entity_obj.entity_type = "HelixGateway"
-            self.comms.send(json.dumps(
-                self._registration(self.next_id(), entity_obj.entity_id, entity_obj.name, entity_obj.entity_type)))
-            on_response(self.recv_msg_queue.get(True, timeout))
+            json_msg = self._registration(self.next_id(), entity_obj.entity_id, entity_obj.name, entity_obj.entity_type)
+            self.comms.send(json.dumps(json_msg))
+            on_response(self._update_transaction_map(json_msg["transactionID"]).get(True, timeout))
             if not self.reg_entity_id:
                 raise RegistrationFailure()
             log.info("Resource Registered {0}".format(entity_obj.name))
@@ -163,8 +200,9 @@ class IotControlCenter(DataCenterComponent):
                 log.exception("Exception while unregistering resource")
                 raise err
 
-        self.comms.send(json.dumps(self._unregistration(self.next_id(), entity_obj.ref_entity)))
-        on_response(self.recv_msg_queue.get(True, timeout))
+        json_msg = self._unregistration(self.next_id(), entity_obj.ref_entity)
+        self.comms.send(json.dumps(json_msg))
+        on_response(self._update_transaction_map(json_msg["transactionID"]).get(True, timeout))
 
     def create_relationship(self, reg_entity_parent, reg_entity_child):
         """ This function initializes all relations between Registered Entities.

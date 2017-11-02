@@ -98,7 +98,6 @@ class MqttDccComms(DCCComms):
         self.tls_conf = tls_conf
         self.qos_details = qos_details
         self.clean_session = clean_session
-        self.userdata = Queue.Queue()
         self.protocol = protocol
         self.transport = transport
         self.keep_alive = keep_alive
@@ -112,7 +111,7 @@ class MqttDccComms(DCCComms):
         :return:
         """
         self.client = Mqtt(self.url, self.port, self.identity, self.tls_conf, self.qos_details, self.client_id,
-                           self.clean_session, self.userdata, self.protocol, self.transport, self.keep_alive,
+                           self.clean_session, None, self.protocol, self.transport, self.keep_alive,
                            self.enable_authentication, self.conn_disconn_timeout)
 
     def _disconnect(self):
@@ -125,26 +124,22 @@ class MqttDccComms(DCCComms):
     def receive(self, msg_attr=None):
         """
         Subscribes to a topic with specified QoS and callback.
-        Set call back to receive_message method if no callback method is passed by user.
+        Set call back to _receive_message method if no callback method is passed by user.
 
         :param msg_attr: MqttMessagingAttributes Object
         :return:
         """
-        callback = msg_attr.sub_callback if msg_attr and msg_attr.sub_callback else self.receive_message
-        if msg_attr:
-            self.client.subscribe(msg_attr.sub_topic, msg_attr.sub_qos, callback)
-        else:
-            self.client.subscribe(self.msg_attr.sub_topic, self.msg_attr.sub_qos, callback)
+        callback = msg_attr.sub_callback if msg_attr and msg_attr.sub_callback else self._receive_message
+        topic = msg_attr.sub_topic if msg_attr and msg_attr.sub_topic else self.msg_attr.sub_topic
+        qos = msg_attr.sub_qos if msg_attr and msg_attr.sub_qos else self.msg_attr.sub_qos
 
-    def receive_message(self, client, userdata, msg):
+        self.client.subscribe(topic, qos, callback)
+
+    def _receive_message(self, client, userdata, msg):
         """
-           Receives message during MQTT subscription and put it in the queue.
-           This queue can be used to get message in DCC but remember to dequeue
-
-           :param msg_attr: MqttMessagingAttributes Object, userdata as queue
-           :return:
-           """
-        userdata.put(str(msg.payload))
+        Default callback
+        """
+        log.info("Simply logging the received message as user didn't specify any callback : " + str(msg.payload))
 
     def send(self, message, msg_attr=None):
         """
