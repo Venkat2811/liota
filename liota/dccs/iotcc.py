@@ -81,7 +81,6 @@ class IotControlCenter(DataCenterComponent):
         self._iotcc_json = self._create_iotcc_json()
         self._iotcc_json_load_retry = int(read_liota_config('IOTCC_PATH', 'iotcc_load_retry'))
         self.counter = 0
-        self.recv_msg_queue = self.comms.userdata
         self.dev_file_path = self._get_file_storage_path("dev_file_path")
         # Liota internal entity file system path special for iotcc
         self.entity_file_path = self._get_file_storage_path("entity_file_path")
@@ -138,7 +137,8 @@ class IotControlCenter(DataCenterComponent):
                     if json_msg["type"] == "UNSUPPORTED_VERSION":
                          raise Exception("Exception in registering resource, version mismatch. Response received from server:" + json_msg["body"])
                     if json_msg["type"] == "create_or_find_resource_response" and json_msg["body"]["uuid"] != "null" and \
-                                    json_msg["body"]["id"] == entity_obj.entity_id:
+                                    json_msg["body"]["id"] == entity_obj.entity_id and \
+                                    json_msg["transactionID"] == trans_id:
                         log.info("FOUND RESOURCE: {0}".format(json_msg["body"]["uuid"]))
                         self.reg_entity_id = json_msg["body"]["uuid"]
                     else:
@@ -150,7 +150,8 @@ class IotControlCenter(DataCenterComponent):
 
             if entity_obj.entity_type == "EdgeSystem":
                 entity_obj.entity_type = "HelixGateway"
-            json_msg = self._registration(self.next_id(), entity_obj.entity_id, entity_obj.name, entity_obj.entity_type)
+            trans_id = self.next_id()
+            json_msg = self._registration(trans_id, entity_obj.entity_id, entity_obj.name, entity_obj.entity_type)
             self.comms.send(json.dumps(json_msg))
             on_response(self._update_transaction_map(json_msg["transactionID"]).get(True, timeout))
             if not self.reg_entity_id:
@@ -171,7 +172,7 @@ class IotControlCenter(DataCenterComponent):
             return RegisteredEntity(entity_obj, self, self.reg_entity_id)
 
     def _check_version(self, json_msg):
-	if json_msg["version"] != self._version:
+        if json_msg["version"] != self._version:
             raise Exception("CLIENT SERVER VERSION MISMATCH. CLIENT VERSION IS:" + self._version + ". SERVER VERSION IS:" + json_msg["version"])
 
     def unregister(self, entity_obj):
